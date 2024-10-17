@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import warnings
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -26,7 +26,7 @@ from airflow.sdk.definitions.baseoperator import BaseOperator, BaseOperatorMeta
 from airflow.sdk.definitions.dag import DAG
 from airflow.task.priority_strategy import _DownstreamPriorityWeightStrategy, _UpstreamPriorityWeightStrategy
 
-DEFAULT_DATE = datetime(2016, 1, 1, tzinfo=UTC)
+DEFAULT_DATE = datetime(2016, 1, 1, tzinfo=timezone.utc)
 
 
 # Essentially similar to airflow.models.baseoperator.BaseOperator
@@ -48,22 +48,16 @@ class DeprecatedOperator(BaseOperator):
         warnings.warn("This operator is deprecated.", DeprecationWarning, stacklevel=2)
         super().__init__(**kwargs)
 
-    def execute(self, context: Context):
-        pass
-
 
 class MockOperator(BaseOperator):
     """Operator for testing purposes."""
 
-    template_fields: Sequence[str] = ("arg1", "arg2")
+    template_fields = ("arg1", "arg2")
 
     def __init__(self, arg1: str = "", arg2: str = "", **kwargs):
         super().__init__(**kwargs)
         self.arg1 = arg1
         self.arg2 = arg2
-
-    def execute(self, context: Context):
-        pass
 
 
 class TestBaseOperator:

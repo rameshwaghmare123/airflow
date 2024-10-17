@@ -109,14 +109,15 @@ class DependencyMixin:
 
     @classmethod
     def _iter_references(cls, obj: Any) -> Iterable[tuple[DependencyMixin, str]]:
-        from .abstractoperator import AbstractOperator
-        # TODO:
-        # from airflow.utils.mixins import ResolveMixin
+        from airflow.sdk.definitions.abstractoperator import AbstractOperator
+
+        # TODO:Task-SDK
+        from airflow.utils.mixins import ResolveMixin
 
         if isinstance(obj, AbstractOperator):
             yield obj, "operator"
-        # elif isinstance(obj, ResolveMixin):
-        #     yield from obj.iter_references()
+        elif isinstance(obj, ResolveMixin):
+            yield from obj.iter_references()
         elif isinstance(obj, Sequence):
             for o in obj:
                 yield from cls._iter_references(o)

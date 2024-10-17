@@ -35,7 +35,6 @@ from typing import (
     Any,
     Callable,
     ClassVar,
-    Self,
     Union,
     cast,
 )
@@ -60,9 +59,7 @@ from airflow.models.param import DagParam
 from airflow.sdk.definitions.abstractoperator import AbstractOperator
 from airflow.sdk.definitions.baseoperator import BaseOperator
 from airflow.sdk.types import NOTSET
-from airflow.stats import Stats
 from airflow.timetables.base import Timetable
-from airflow.timetables.interval import CronDataIntervalTimetable, DeltaDataIntervalTimetable
 from airflow.timetables.simple import (
     AssetTriggeredTimetable,
     ContinuousTimetable,
@@ -75,9 +72,15 @@ from airflow.utils.trigger_rule import TriggerRule
 from airflow.utils.types import EdgeInfoType
 
 if TYPE_CHECKING:
+    # TODO: Task-SDK: Remove pendulum core dep
+    from pendulum.tz.timezone import FixedTimezone, Timezone
+
     from airflow.decorators import TaskDecoratorCollection
     from airflow.models.operator import Operator
     from airflow.sdk.definitions.taskgroup import TaskGroup
+    from airflow.sdk.definitions.node import DAGNode
+    from airflow.typing_compat import Self
+
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +147,11 @@ DAG_ARGS_EXPECTED_TYPES = {
 
 def _create_timetable(interval: ScheduleInterval, timezone: Timezone | FixedTimezone) -> Timetable:
     """Create a Timetable instance from a plain ``schedule`` value."""
+
+    from airflow.configuration import conf as airflow_conf
+    from airflow.timetables.interval import CronDataIntervalTimetable, DeltaDataIntervalTimetable
+    from airflow.timetables.trigger import CronTriggerTimetable
+
     if interval is None:
         return NullTimetable()
     if interval == "@once":
@@ -310,7 +318,7 @@ class DAG:
     template_undefined: type[jinja2.StrictUndefined] = jinja2.StrictUndefined
     user_defined_macros: dict | None = None
     user_defined_filters: dict | None = None
-    default_args: dict | None = attrs.field(factory=dict, converter=copy.copy)
+    default_args: dict[str, Any] = attrs.field(factory=dict, converter=copy.copy)
     concurrency: int | None = None
     max_active_tasks: int = 16
     max_active_runs: int = 16
@@ -327,23 +335,27 @@ class DAG:
     jinja_environment_kwargs: dict | None = None
     render_template_as_native_obj: bool = False
     tags: list[str] | None = None
-    owner_links: dict[str, str] | None = None
+    owner_links: dict[str, str] = attrs.field(factory=dict)
     auto_register: bool = True
     fail_stop: bool = False
     dag_display_name: str = attrs.field()
 
-    task_dict: dict[str, DAGNode] = attrs.field(factory=dict, init=False)
+    task_dict: dict[str, Operator] = attrs.field(factory=dict, init=False)
 
-    task_group: TaskGroup = attrs.field(on_setattr=attrs.setters.NO_OP)
+    task_group: TaskGroup = attrs.field(on_setattr=attrs.setters.frozen)
 
     fileloc: str = attrs.field(init=False)
+    partial: bool = attrs.field(init=False, default=False)
 
     edge_info: dict[str, dict[str, EdgeInfoType]] = attrs.field(init=False, factory=dict)
 
     @fileloc.default
     def _default_fileloc(self) -> str:
         # Skip over this frame, and the 'attrs generated init'
-        back = sys._getframe().f_back.f_back
+        back = sys._getframe().f_back
+        if not back or not (back := back.f_back):
+            # We expect two frames back, if not we don't know where we are
+            return ""
         return back.f_code.co_filename if back else ""
 
     @dag_display_name.default
@@ -480,7 +492,6 @@ class DAG:
                         # this is required to ensure consistent behavior of dag
                         # when clearing an indirect setup
                         raise ValueError("Setup tasks must be followed with trigger rule ALL_SUCCESS.")
-            FailStopDagInvalidTriggerRule.check(dag=self, trigger_rule=task.trigger_rule)
 
     def param(self, name: str, default: Any = NOTSET) -> DagParam:
         """
@@ -514,20 +525,6 @@ class DAG:
         return [val for sublist in upstream_tasks for val in sublist if not getattr(val, "is_teardown", None)]
 
     @property
-    def relative_fileloc(self) -> pathlib.Path:
-        """File location of the importable dag 'file' relative to the configured DAGs folder."""
-        path = pathlib.Path(self.fileloc)
-        try:
-            rel_path = path.relative_to(self._processor_dags_folder or settings.DAGS_FOLDER)
-            if rel_path == pathlib.Path("."):
-                return path
-            else:
-                return rel_path
-        except ValueError:
-            # Not relative to DAGS_FOLDER.
-            return path
-
-    @property
     def folder(self) -> str:
         """Folder location of where the DAG object is instantiated."""
         return os.path.dirname(self.fileloc)
@@ -544,24 +541,6 @@ class DAG:
     @property
     def allow_future_exec_dates(self) -> bool:
         return settings.ALLOW_FUTURE_EXEC_DATES and not self.timetable.can_be_scheduled
-
-    @classmethod
-    def execute_callback(cls, callbacks: list[Callable] | None, context: Context | None, dag_id: str):
-        """
-        Triggers the callbacks with the given context.
-
-        :param callbacks: List of callbacks to call
-        :param context: Context to pass to all callbacks
-        :param dag_id: The dag_id of the DAG to find.
-        """
-        if callbacks and context:
-            for callback in callbacks:
-                cls.logger().info("Executing dag callback function: %s", callback)
-                try:
-                    callback(context)
-                except Exception:
-                    cls.logger().exception("failed to invoke dag state update callback")
-                    Stats.incr("dag.callback_exceptions", tags={"dag_id": dag_id})
 
     def resolve_template_files(self):
         for t in self.tasks:
@@ -670,9 +649,9 @@ class DAG:
         """
         from airflow.models.mappedoperator import MappedOperator
 
-        # deep-copying self.task_dict and self._task_group takes a long time, and we don't want all
+        # deep-copying self.task_dict and self.task_group takes a long time, and we don't want all
         # the tasks anyway, so we copy the tasks manually later
-        memo = {id(self.task_dict): None, id(self._task_group): None}
+        memo = {id(self.task_dict): None, id(self.task_group): None}
         dag = copy.deepcopy(self, memo)  # type: ignore
 
         if isinstance(task_ids_or_regex, (str, Pattern)):
@@ -754,7 +733,7 @@ class DAG:
 
             return copied
 
-        dag._task_group = filter_task_group(self.task_group, None)
+        object.__setattr__(dag, "task_group", filter_task_group(self.task_group, None))
 
         # Removing upstream/downstream references to tasks and TaskGroups that did not make
         # the cut.
@@ -784,7 +763,7 @@ class DAG:
 
     @functools.cached_property
     def task_group_dict(self):
-        return {k: v for k, v in self._task_group.get_task_group_dict().items() if k is not None}
+        return {k: v for k, v in self.task_group.get_task_group_dict().items() if k is not None}
 
     def get_task(self, task_id: str) -> Operator:
         if task_id in self.task_dict:
@@ -840,6 +819,8 @@ class DAG:
             # Add task_id to used_group_ids to prevent group_id and task_id collisions.
             self.task_group.used_group_ids.add(task_id)
 
+        FailStopDagInvalidTriggerRule.check(fail_stop=self.fail_stop, trigger_rule=task.trigger_rule)
+
     def add_tasks(self, tasks: Iterable[Operator]) -> None:
         """
         Add a list of tasks to the DAG.
@@ -856,8 +837,6 @@ class DAG:
         tg = getattr(task, "task_group", None)
         if tg:
             tg._remove(task)
-
-        self.task_count = len(self.task_dict)
 
     def cli(self):
         """Exposes a CLI specific to this DAG."""

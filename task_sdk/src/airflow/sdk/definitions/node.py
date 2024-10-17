@@ -27,9 +27,11 @@ from typing import TYPE_CHECKING
 import methodtools
 import re2
 
+from airflow.exceptions import AirflowException
 from airflow.sdk.definitions.mixins import DependencyMixin
 
 if TYPE_CHECKING:
+    from airflow.models.operator import Operator
     from airflow.sdk.definitions.dag import DAG
     from airflow.sdk.definitions.edges import EdgeModifier
     from airflow.sdk.definitions.taskgroup import TaskGroup
@@ -96,12 +98,22 @@ class DAGNode(DependencyMixin, metaclass=ABCMeta):
             return self.dag.dag_id
         return "_in_memory_dag_"
 
-    @methodtools.lru_cache()
     @property
+    @methodtools.lru_cache()
     def log(self) -> Logger:
         typ = type(self)
         name = f"{typ.__module__}.{typ.__qualname__}"
         return logging.getLogger(name)
+
+    @property
+    @abstractmethod
+    def roots(self) -> Sequence[DAGNode]:
+        raise NotImplementedError()
+
+    @property
+    @abstractmethod
+    def leaves(self) -> Sequence[DAGNode]:
+        raise NotImplementedError()
 
     def _set_relatives(
         self,
@@ -153,12 +165,12 @@ class DAGNode(DependencyMixin, metaclass=ABCMeta):
                 task.downstream_task_ids.add(self.node_id)
                 self.upstream_task_ids.add(task.node_id)
                 if edge_modifier:
-                    edge_modifier.add_edge_info(self.dag, task.node_id, self.node_id)
+                    edge_modifier.add_edge_info(dag, task.node_id, self.node_id)
             else:
                 self.downstream_task_ids.add(task.node_id)
                 task.upstream_task_ids.add(self.node_id)
                 if edge_modifier:
-                    edge_modifier.add_edge_info(self.dag, self.node_id, task.node_id)
+                    edge_modifier.add_edge_info(dag, self.node_id, task.node_id)
 
     def set_downstream(
         self,
@@ -177,14 +189,14 @@ class DAGNode(DependencyMixin, metaclass=ABCMeta):
         self._set_relatives(task_or_task_list, upstream=True, edge_modifier=edge_modifier)
 
     @property
-    def downstream_list(self) -> Iterable[DAGNode]:
+    def downstream_list(self) -> Iterable[Operator]:
         """List of nodes directly downstream."""
         if not self.dag:
             raise RuntimeError(f"Operator {self} has not been assigned to a DAG yet")
         return [self.dag.get_task(tid) for tid in self.downstream_task_ids]
 
     @property
-    def upstream_list(self) -> Iterable[DAGNode]:
+    def upstream_list(self) -> Iterable[Operator]:
         """List of nodes directly upstream."""
         if not self.dag:
             raise RuntimeError(f"Operator {self} has not been assigned to a DAG yet")

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Sequence
 
@@ -28,8 +29,8 @@ from airflow.utils.mixins import ResolveMixin
 if TYPE_CHECKING:
     import jinja2
 
-    from airflow import DAG
     from airflow.models.operator import Operator
+    from airflow.sdk import DAG
     from airflow.utils.context import Context
 
 
@@ -106,7 +107,7 @@ class Templater(LoggingMixin):
         self,
         parent: Any,
         template_fields: Iterable[str],
-        context: Context,
+        context: Mapping[str, Any],
         jinja_env: jinja2.Environment,
         seen_oids: set[int],
     ) -> None:

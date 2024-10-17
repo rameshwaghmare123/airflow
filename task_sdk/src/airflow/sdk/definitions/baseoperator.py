@@ -23,8 +23,8 @@ import contextlib
 import copy
 import inspect
 import warnings
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Iterable, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import total_ordering, wraps
 from types import FunctionType
@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 import attrs
 
-from airflow.exceptions import FailStopDagInvalidTriggerRule
 from airflow.sdk.definitions.abstractoperator import (
     DEFAULT_IGNORE_FIRST_DEPENDS_ON_PAST,
     DEFAULT_OWNER,
@@ -57,19 +56,20 @@ from airflow.utils.types import AttributeRemoved
 T = TypeVar("T", bound=FunctionType)
 
 if TYPE_CHECKING:
-    # from ..execution_time.context import Context
-    class Context: ...
-
-    class ParamsDict: ...
-
+    from airflow.models.xcom_arg import XComArg
     from airflow.sdk.definitions.dag import DAG
+    from airflow.sdk.definitions.taskgroup import TaskGroup
+    from airflow.typing_compat import TypeAlias
     from airflow.utils.operator_resources import Resources
 
-from airflow.sdk.definitions.taskgroup import TaskGroup
+    ParamsDict: TypeAlias = collections.abc.MutableMapping[str, Any]
+else:
+    # TODO: Task-SDK
+    ParamsDict = dict
+
 
 # TODO: Task-SDK
 AirflowException = RuntimeError
-ParamsDict = dict
 
 
 def _get_parent_defaults(dag: DAG | None, task_group: TaskGroup | None) -> tuple[dict, ParamsDict]:
@@ -147,10 +147,17 @@ class BaseOperatorMeta(abc.ABCMeta):
                 getattr(self, "_BaseOperator__from_mapped", False),
             )
 
-            dag: DAG | None = kwargs.get("dag") or DagContext.get_current()
+            dag: DAG | None = kwargs.get("dag")
+            if dag is None:
+                dag = DagContext.get_current()
+                if dag is not None:
+                    kwargs["dag"] = dag
+
             task_group: TaskGroup | None = kwargs.get("task_group")
             if dag and not task_group:
                 task_group = TaskGroupContext.get_current(dag)
+                if task_group is not None:
+                    kwargs["task_group"] = task_group
 
             default_args, merged_params = get_merged_defaults(
                 dag=dag,
@@ -276,7 +283,7 @@ BASEOPERATOR_ARGS_EXPECTED_TYPES = {
 # - "Can't combine custom __setattr__ with on_setattr hooks"
 # - Setting class-wide `define(on_setarrs=...)` isn't called for non-attrs subclasses
 @total_ordering
-@dataclass(repr=False, kw_only=True)
+@dataclass(repr=False)
 class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
     r"""
     Abstract base class for all operators.
@@ -507,12 +514,11 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
     ignore_first_depends_on_past: bool = DEFAULT_IGNORE_FIRST_DEPENDS_ON_PAST
     wait_for_past_depends_before_skipping: bool = DEFAULT_WAIT_FOR_PAST_DEPENDS_BEFORE_SKIPPING
     wait_for_downstream: bool = False
-    dag: DAG | None = None
     params: collections.abc.MutableMapping | None = None
     default_args: dict | None = None
     priority_weight: int = DEFAULT_PRIORITY_WEIGHT
     # TODO:
-    weight_rule: PriorityWeightStrategy | str = DEFAULT_WEIGHT_RULE
+    weight_rule: PriorityWeightStrategy = DEFAULT_WEIGHT_RULE
     queue: str = DEFAULT_QUEUE
     pool: str = "default"
     pool_slots: int = DEFAULT_POOL_SLOTS
@@ -524,7 +530,7 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
     # on_skipped_callback: None | TaskStateChangeCallback | list[TaskStateChangeCallback] = None
     # pre_execute: TaskPreExecuteHook | None = None
     # post_execute: TaskPostExecuteHook | None = None
-    trigger_rule: str = DEFAULT_TRIGGER_RULE
+    trigger_rule: TriggerRule = DEFAULT_TRIGGER_RULE
     resources: dict[str, Any] | None = None
     run_as_user: str | None = None
     task_concurrency: int | None = None
@@ -535,20 +541,20 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
     executor_config: dict | None = None
     do_xcom_push: bool = True
     multiple_outputs: bool = False
-    inlets: Any | None = None
-    outlets: Any | None = None
+    inlets: list[Any] = field(default_factory=list)
+    outlets: list[Any] = field(default_factory=list)
     task_group: TaskGroup | None = None
     doc: str | None = None
     doc_md: str | None = None
     doc_json: str | None = None
     doc_yaml: str | None = None
     doc_rst: str | None = None
-    _task_display_name: str
+    _task_display_name: str | None = None
     logger_name: str | None = None
     allow_nested_operators: bool = True
 
-    template_fields: ClassVar[Sequence[str]] = ()
-    template_ext: ClassVar[Sequence[str]] = ()
+    template_fields: Collection[str] = ()
+    template_ext: Sequence[str] = ()
 
     template_fields_renderers: ClassVar[dict[str, str]] = {}
 
@@ -558,6 +564,8 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
 
     # TODO: Task-SDK Mapping
     # partial: Callable[..., OperatorPartial] = _PartialDescriptor()  # type: ignore
+
+    _dag: DAG | None = field(init=False, default=None)
 
     _comps: ClassVar[set[str]] = {
         "task_id",
@@ -593,7 +601,8 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
     __instantiated: bool = False
     # List of args as passed to `init()`, after apply_defaults() has been updated. Used to "recreate" the task
     # when mapping
-    __init_kwargs: dict[str, Any]
+    # Set via the metaclass
+    __init_kwargs: dict[str, Any] = field(init=False)
 
     # Set to True before calling execute method
     _lock_for_execution: bool = False
@@ -639,7 +648,7 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
         wait_for_past_depends_before_skipping: bool = DEFAULT_WAIT_FOR_PAST_DEPENDS_BEFORE_SKIPPING,
         wait_for_downstream: bool = False,
         dag: DAG | None = None,
-        params: MutableMapping | None = None,
+        params: collections.abc.MutableMapping[str, Any] | None = None,
         default_args: dict | None = None,
         priority_weight: int = DEFAULT_PRIORITY_WEIGHT,
         weight_rule: str | PriorityWeightStrategy = DEFAULT_WEIGHT_RULE,
@@ -678,10 +687,7 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
         allow_nested_operators: bool = True,
         **kwargs: Any,
     ):
-        from airflow.sdk.definitions.contextmanager import DagContext, TaskGroupContext
-
-        dag = dag or DagContext.get_current()
-        task_group = task_group or TaskGroupContext.get_current(dag)
+        # Note: Metaclass handles passing in the DAG/TaskGroup from active context manager, if any
 
         self.task_id = task_group.child_id(task_id) if task_group else task_id
         if not self.__from_mapped and task_group:
@@ -756,7 +762,6 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
             )
 
         self.trigger_rule: TriggerRule = TriggerRule(trigger_rule)
-        FailStopDagInvalidTriggerRule.check(dag=dag, trigger_rule=self.trigger_rule)
 
         self.depends_on_past: bool = depends_on_past
         self.ignore_first_depends_on_past: bool = ignore_first_depends_on_past
@@ -795,15 +800,13 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
         self._task_display_name = task_display_name
 
         self.allow_nested_operators = allow_nested_operators
-        self.inlets: list = []
-        self.outlets: list = []
 
         """
         self._log_config_logger_name = "airflow.task.operators"
         self._logger_name = logger_name
+        """
 
         # Lineage
-
         if inlets:
             self.inlets = (
                 inlets
@@ -821,7 +824,6 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
                     outlets,
                 ]
             )
-        """
 
         if isinstance(self.template_fields, str):
             warnings.warn(
@@ -923,25 +925,38 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
         self.outlets.extend(outlets)
 
     def get_dag(self) -> DAG | None:
-        return self.dag
+        return self._dag
 
-    def _convert_dag(self, dag: DAG | None | AttributeRemoved) -> DAG | None | AttributeRemoved:
+    @property  # type: ignore[override]
+    def dag(self) -> DAG:
+        """Returns the Operator's DAG if set, otherwise raises an error."""
+        if dag := self._dag:
+            return dag
+        else:
+            raise RuntimeError(f"Operator {self} has not been assigned to a DAG yet")
+
+    @dag.setter
+    def dag(self, dag: DAG | None | AttributeRemoved) -> None:
         """Operators can be assigned to one DAG, one time. Repeat assignments to that same DAG are ok."""
+        self._dag = dag
+
+    def _convert__dag(self, dag: DAG | None | AttributeRemoved) -> DAG | None | AttributeRemoved:
+        # Called automatically by __setattr__ method
         from airflow.sdk.definitions.dag import DAG
 
         if dag is None:
             return dag
 
         # if set to removed, then just set and exit
-        if self.dag.__class__ is AttributeRemoved:
+        if type(self._dag) is AttributeRemoved:
             return dag
         # if setting to removed, then just set and exit
-        if dag.__class__ is AttributeRemoved:
+        if type(dag) is AttributeRemoved:
             return AttributeRemoved("_dag")  # type: ignore[assignment]
 
         if not isinstance(dag, DAG):
             raise TypeError(f"Expected DAG; received {dag.__class__.__name__}")
-        elif self.dag is not None and self.dag is not dag:
+        elif self._dag is not None and self._dag is not dag:
             raise ValueError(f"The DAG assigned to {self} can not be changed.")
 
         if self.__from_mapped:
@@ -986,7 +1001,7 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
 
     def has_dag(self):
         """Return True if the Operator has been assigned to a DAG."""
-        return self.dag is not None
+        return self._dag is not None
 
     def _set_xcomargs_dependencies(self) -> None:
         from airflow.models.xcom_arg import XComArg
@@ -1065,7 +1080,8 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
         """Returns reference to XCom pushed by current operator."""
         from airflow.models.xcom_arg import XComArg
 
-        return XComArg(operator=self)
+        # TODO: Task-SDK: remove this type ignore once XComArg is ported over
+        return XComArg(operator=self)  # type: ignore[call-overload]
 
     @classmethod
     def get_serialized_fields(cls):
@@ -1129,13 +1145,3 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
         # needs to cope when `self` is a Serialized instance of a EmptyOperator or one
         # of its subclasses (which don't inherit from anything but BaseOperator).
         return getattr(self, "_is_empty", False)
-
-    def execute(self, context: Context) -> Any:
-        """
-        Derive when creating an operator.
-
-        Context is the same dictionary used as when rendering jinja templates.
-
-        Refer to get_template_context for more context.
-        """
-        raise NotImplementedError()

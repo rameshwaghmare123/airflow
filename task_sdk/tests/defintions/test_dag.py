@@ -16,7 +16,7 @@
 # under the License.
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -25,7 +25,7 @@ from airflow.models.param import Param, ParamsDict
 from airflow.sdk.definitions.baseoperator import BaseOperator
 from airflow.sdk.definitions.dag import DAG
 
-DEFAULT_DATE = datetime(2016, 1, 1, tzinfo=UTC)
+DEFAULT_DATE = datetime(2016, 1, 1, tzinfo=timezone.utc)
 
 
 class TestDag:

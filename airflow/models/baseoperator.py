@@ -24,7 +24,6 @@ Base operator for all operators.
 from __future__ import annotations
 
 import collections.abc
-import contextlib
 import copy
 import functools
 import logging
@@ -42,7 +41,6 @@ from typing import (
     NoReturn,
     Sequence,
     TypeVar,
-    Union,
 )
 
 import pendulum
@@ -73,17 +71,17 @@ from airflow.models.abstractoperator import (
 )
 from airflow.models.base import _sentinel
 from airflow.models.mappedoperator import OperatorPartial, validate_mapping_kwargs
-from airflow.models.param import ParamsDict
 from airflow.models.pool import Pool
 from airflow.models.taskinstance import TaskInstance, clear_task_instances
 from airflow.models.taskmixin import DependencyMixin
-from airflow.sdk.definitions.baseoperator import BaseOperator as TaskSDKBaseOperator
 
 # Keeping this file at all is a temp thing as we migrate the repo to the task sdk as the base, but to keep
 # main working and useful for others to develop against we use the TaskSDK here but keep this file around
-from airflow.sdk.definitions.dag import DAG
-from airflow.sdk.definitions.edges import EdgeModifier as TaskSDKEdgeModifier
-from airflow.sdk.definitions.mixins import DependencyMixin as TaskSDKDependencyMixin
+from airflow.sdk import DAG, BaseOperator as TaskSDKBaseOperator, EdgeModifier as TaskSDKEdgeModifier
+from airflow.sdk.definitions.baseoperator import (
+    BaseOperatorMeta as TaskSDKBaseOperatorMeta,
+    get_merged_defaults,
+)
 from airflow.serialization.enums import DagAttributeTypes
 from airflow.task.priority_strategy import PriorityWeightStrategy
 from airflow.ti_deps.deps.mapped_task_upstream_dep import MappedTaskUpstreamDep
@@ -108,7 +106,7 @@ if TYPE_CHECKING:
 
     from airflow.models.abstractoperator import TaskStateChangeCallback
     from airflow.models.baseoperatorlink import BaseOperatorLink
-    from airflow.models.dag import DAG
+    from airflow.models.dag import DAG, DAG as SchedulerDAG
     from airflow.models.operator import Operator
     from airflow.ti_deps.deps.base_ti_dep import BaseTIDep
     from airflow.triggers.base import BaseTrigger, StartTriggerArgs
@@ -147,38 +145,6 @@ def coerce_resources(resources: dict[str, Any] | None) -> Resources | None:
     if resources is None:
         return None
     return Resources(**resources)
-
-
-def _get_parent_defaults(dag: DAG | None, task_group: TaskGroup | None) -> tuple[dict, ParamsDict]:
-    if not dag:
-        return {}, ParamsDict()
-    dag_args = copy.copy(dag.default_args)
-    dag_params = copy.deepcopy(dag.params)
-    if task_group:
-        if task_group.default_args and not isinstance(task_group.default_args, collections.abc.Mapping):
-            raise TypeError("default_args must be a mapping")
-        dag_args.update(task_group.default_args)
-    return dag_args, dag_params
-
-
-def get_merged_defaults(
-    dag: DAG | None,
-    task_group: TaskGroup | None,
-    task_params: collections.abc.MutableMapping | None,
-    task_default_args: dict | None,
-) -> tuple[dict, ParamsDict]:
-    args, params = _get_parent_defaults(dag, task_group)
-    if task_params:
-        if not isinstance(task_params, collections.abc.Mapping):
-            raise TypeError("params must be a mapping")
-        params.update(task_params)
-    if task_default_args:
-        if not isinstance(task_default_args, collections.abc.Mapping):
-            raise TypeError("default_args must be a mapping")
-        args.update(task_default_args)
-        with contextlib.suppress(KeyError):
-            params.update(task_default_args["params"] or {})
-    return args, params
 
 
 class _PartialDescriptor:
@@ -416,7 +382,7 @@ class ExecutorSafeguard:
 
 
 # TODO: Task-SDK - temporarily extend the metaclass to add in the ExecutorSafeguard.
-class BaseOperatorMeta(type(TaskSDKBaseOperator)):
+class BaseOperatorMeta(TaskSDKBaseOperatorMeta):
     def __new__(cls, name, bases, namespace, **kwargs):
         execute_method = namespace.get("execute")
         if callable(execute_method) and not getattr(execute_method, "__isabstractmethod__", False):
@@ -637,6 +603,8 @@ class BaseOperator(TaskSDKBaseOperator, AbstractOperator, metaclass=BaseOperator
     on_success_callback: None | TaskStateChangeCallback | list[TaskStateChangeCallback] = None
     on_retry_callback: None | TaskStateChangeCallback | list[TaskStateChangeCallback] = None
     on_skipped_callback: None | TaskStateChangeCallback | list[TaskStateChangeCallback] = None
+    _is_setup: bool = False
+    _is_teardown: bool = False
 
     def __init__(self, pre_execute=None, post_execute=None, **kwargs):
         if start_date := kwargs.get("start_date", None):
@@ -662,14 +630,6 @@ class BaseOperator(TaskSDKBaseOperator, AbstractOperator, metaclass=BaseOperator
     operator_extra_links: Collection[BaseOperatorLink] = ()
 
     partial: Callable[..., OperatorPartial] = _PartialDescriptor()  # type: ignore
-
-    def add_inlets(self, inlets: Iterable[Any]):
-        """Set inlets to this operator."""
-        self.inlets.extend(inlets)
-
-    def add_outlets(self, outlets: Iterable[Any]):
-        """Define the outlets of this operator."""
-        self.outlets.extend(outlets)
 
     def get_inlet_defs(self):
         """
@@ -821,6 +781,12 @@ class BaseOperator(TaskSDKBaseOperator, AbstractOperator, metaclass=BaseOperator
         qry = qry.where(TaskInstance.task_id.in_(tasks))
         results = session.scalars(qry).all()
         count = len(results)
+
+        if TYPE_CHECKING:
+            # TODO: Task-SDK: We need to set this to the scheduler DAG until we fully separate scheduling and
+            # defintion code
+            assert isinstance(self.dag, SchedulerDAG)
+
         clear_task_instances(results, session, dag=self.dag)
         session.commit()
         return count
@@ -867,6 +833,10 @@ class BaseOperator(TaskSDKBaseOperator, AbstractOperator, metaclass=BaseOperator
         # _guaranteed_ to have start_date (else we couldn't have been added to a DAG)
         if TYPE_CHECKING:
             assert self.start_date
+
+            # TODO: Task-SDK: We need to set this to the scheduler DAG until we fully separate scheduling and
+            # defintion code
+            assert isinstance(self.dag, SchedulerDAG)
 
         start_date = pendulum.instance(start_date or self.start_date)
         end_date = pendulum.instance(end_date or self.end_date or timezone.utcnow())
@@ -1101,12 +1071,7 @@ class BaseOperator(TaskSDKBaseOperator, AbstractOperator, metaclass=BaseOperator
         return self.start_trigger_args
 
 
-# TODO: Task-SDK: remove before Airflow 3.0
-# Temp for migration to Task-SDK only
-_HasDependency = Union[DependencyMixin | TaskSDKDependencyMixin]
-
-
-def chain(*tasks: _HasDependency | Sequence[DependencyMixin]) -> None:
+def chain(*tasks: DependencyMixin | Sequence[DependencyMixin]) -> None:
     r"""
     Given a number of tasks, builds a dependency chain.
 
@@ -1215,10 +1180,10 @@ def chain(*tasks: _HasDependency | Sequence[DependencyMixin]) -> None:
     :param tasks: Individual and/or list of tasks, EdgeModifiers, XComArgs, or TaskGroups to set dependencies
     """
     for up_task, down_task in zip(tasks, tasks[1:]):
-        if isinstance(up_task, (DependencyMixin, TaskSDKDependencyMixin)):
+        if isinstance(up_task, DependencyMixin):
             up_task.set_downstream(down_task)
             continue
-        if isinstance(down_task, (DependencyMixin, TaskSDKDependencyMixin)):
+        if isinstance(down_task, DependencyMixin):
             down_task.set_upstream(up_task)
             continue
         if not isinstance(up_task, Sequence) or not isinstance(down_task, Sequence):
@@ -1363,8 +1328,6 @@ def chain_linear(*elements: DependencyMixin | Sequence[DependencyMixin]):
                 task >> curr_elem
                 if not deps_set:
                     deps_set = True
-        prev_elem = (
-            [curr_elem] if isinstance(curr_elem, (DependencyMixin, TaskSDKDependencyMixin)) else curr_elem
-        )
+        prev_elem = [curr_elem] if isinstance(curr_elem, DependencyMixin) else curr_elem
     if not deps_set:
         raise ValueError("No dependencies were set. Did you forget to expand with `*`?")

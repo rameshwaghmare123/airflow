@@ -97,16 +97,28 @@ class TaskGroup(DAGNode):
     group_id: str
     prefix_group_id: bool = True
     parent_group: TaskGroup | None = None
-    dag: DAG | None = None
+    dag: DAG = attrs.field(default=None)
     default_args: dict[str, Any] = attrs.field(factory=dict, converter=copy.deepcopy)
+    tooltip: str = ""
     children: dict[str, DAGNode] = attrs.field(factory=dict, init=False)
 
     upstream_group_ids: set[str | None] = attrs.field(factory=set, init=False)
     downstream_group_ids: set[str | None] = attrs.field(factory=set, init=False)
     upstream_task_ids: set[str] = attrs.field(factory=set, init=False)
-    downstream_task_ids: str[str] = attrs.field(factory=set, init=False)
+    downstream_task_ids: set[str] = attrs.field(factory=set, init=False)
 
     used_group_ids: set[str] = attrs.field(factory=set, init=False, on_setattr=attrs.setters.NO_OP)
+
+    @dag.default
+    def _default_dag(self):
+        from airflow.sdk.definitions.contextmanager import DagContext
+
+        if self.parent_group is not None:
+            return self.parent_group.dag
+        dag = DagContext.get_current()
+        if not dag:
+            raise RuntimeError("TaskGroup can only be used inside a dag")
+        return dag
 
     def __atrs_post_init__(self):
         if self.parent_group:

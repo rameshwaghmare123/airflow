@@ -19,21 +19,41 @@ from __future__ import annotations
 
 from collections import deque
 from types import ModuleType
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from airflow.sdk.definitions.dag import DAG
 from airflow.sdk.definitions.taskgroup import TaskGroup
 
 T = TypeVar("T")
 
+__all__ = [
+    "DagContext",
+    "TaskGroupContext",
+]
 
-class ContextStack(Generic[T]):
-    _context: deque[T]
 
-    def __init_subclass__(cls, /, **kwargs) -> None:
-        if not kwargs.get("share_parent_context", False):
+# In order to add a `@classproperty`-like thing we need to define a property on a metaclass.
+class ContextStackMeta(type):
+    _context: deque
+
+    # TODO: Task-SDK:
+    # share_parent_context can go away once the DAG and TaskContext manager in airflow.models are removed and
+    # everything uses sdk fully for definition/parsing
+    def __new__(cls, name, bases, namespace, share_parent_context: bool = False, **kwargs: Any):
+        new_cls = super().__new__(cls, name, bases, namespace, **kwargs)
+
+        if not share_parent_context:
             cls._context = deque()
-        return super().__init_subclass__()
+        return new_cls
+
+    @property
+    def active(self) -> bool:
+        """The active property says if any object is currently in scope."""
+        return bool(self._context)
+
+
+class ContextStack(Generic[T], metaclass=ContextStackMeta):
+    _context: deque[T]
 
     @classmethod
     def push(cls, obj: T):
@@ -49,16 +69,6 @@ class ContextStack(Generic[T]):
             return cls._context[0]
         except IndexError:
             return None
-
-    @classmethod
-    @property
-    def active(cls) -> bool:
-        """The active property says if any object is currently in scope."""
-        try:
-            cls._context[0]
-            return True
-        except IndexError:
-            return False
 
 
 class DagContext(ContextStack[DAG]):
@@ -82,7 +92,8 @@ class DagContext(ContextStack[DAG]):
 
     """
 
-    autoregistered_dags: set[tuple[DAG, ModuleType]] = set()
+    # TODO: Task-SDK, should module type be optional? Will that break more?
+    autoregistered_dags: set[tuple[DAG, ModuleType | None]] = set()
     current_autoregister_module_name: str | None = None
 
     @classmethod
@@ -92,6 +103,7 @@ class DagContext(ContextStack[DAG]):
         if cls.current_autoregister_module_name is not None and dag and getattr(dag, "auto_register", True):
             # mod = sys.modules[cls.current_autoregister_module_name]
             cls.autoregistered_dags.add((dag, None))
+        return dag
 
 
 class TaskGroupContext(ContextStack[TaskGroup]):
@@ -104,3 +116,4 @@ class TaskGroupContext(ContextStack[TaskGroup]):
         if dag := dag or DagContext.get_current():
             # If there's currently a DAG but no TaskGroup, return the root TaskGroup of the dag.
             return dag.task_group
+        return None
