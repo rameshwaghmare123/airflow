@@ -196,12 +196,14 @@ class TestBaseOperator:
         from airflow.models.xcom_arg import XComArg
 
         op = MockOperator(task_id="test_task")
+
+        op._lock_for_execution = True
         # TODO: Task-SDK
         # op_copy = op.prepare_for_execution()
         op_copy = op
 
         spy_agency.spy_on(XComArg.apply_upstream_relationship, call_original=False)
-        op_copy.execute({})
+        op_copy.arg1 = "b"
         assert XComArg.apply_upstream_relationship.called == False
 
     def test_upstream_is_set_when_template_field_is_xcomarg(self):
@@ -269,14 +271,9 @@ def test_init_subclass_args():
         pass
 
     task = ConcreteSubclassOp(task_id="op1")
-    # TODO: Task-SDK
-    # task_copy = task.prepare_for_execution()
-    task_copy = task
 
-    task_copy.execute(context)
-
-    assert task_copy._class_arg == class_arg
-    assert task_copy.context_arg == context
+    assert task._class_arg == class_arg
+    assert task.context_arg == context
 
 
 class CustomInt(int):

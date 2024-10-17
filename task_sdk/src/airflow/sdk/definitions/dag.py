@@ -55,7 +55,7 @@ from airflow.exceptions import (
     ParamValidationError,
     TaskNotFound,
 )
-from airflow.models.param import DagParam
+from airflow.models.param import DagParam, ParamsDict
 from airflow.sdk.definitions.abstractoperator import AbstractOperator
 from airflow.sdk.definitions.baseoperator import BaseOperator
 from airflow.sdk.types import NOTSET
@@ -114,10 +114,10 @@ _DAG_HASH_ATTRS = frozenset(
         "parent_dag",
         "start_date",
         "end_date",
-        "schedule_interval",
         "fileloc",
         "template_searchpath",
         "last_loaded",
+        "timetable",
     }
 )
 
@@ -166,6 +166,26 @@ def _create_timetable(interval: ScheduleInterval, timezone: Timezone | FixedTime
         else:
             return CronTriggerTimetable(interval, timezone=timezone)
     raise ValueError(f"{interval!r} is not a valid schedule.")
+
+
+def _convert_params(val: abc.MutableMapping | None, self_: DAG) -> ParamsDict:
+    """
+    Convert the plain dict into a ParamsDict
+
+    This will also merge in params from default_args
+    """
+
+    val = val or {}
+
+    # merging potentially conflicting default_args['params'] into params
+    if "params" in self_.default_args:
+        val.update(self_.default_args["params"])
+        del self_.default_args["params"]
+
+    params = ParamsDict(val)
+    object.__setattr__(self_, "params", params)
+
+    return params
 
 
 def _all_after_dag_id_to_kw_only(cls, fields: list[attrs.Attribute]):
@@ -310,7 +330,7 @@ class DAG:
     start_date: datetime | None = None
     end_date: datetime | None = None
     timezone: timezone = timezone.utc
-    schedule: ScheduleArg = attrs.field(default=None, on_setattr=attrs.setters.NO_OP)
+    schedule: ScheduleArg = attrs.field(default=None, on_setattr=attrs.setters.frozen)
     timetable: Timetable = attrs.field(init=False)
     full_filepath: str | None = None
     template_searchpath: str | Iterable[str] | None = None
@@ -329,7 +349,9 @@ class DAG:
     # on_success_callback: None | DagStateChangeCallback | list[DagStateChangeCallback] = None
     # on_failure_callback: None | DagStateChangeCallback | list[DagStateChangeCallback] = None
     doc_md: str | None = None
-    params: abc.MutableMapping | None = attrs.field(default=None)
+    params: ParamsDict = attrs.field(
+        default=None, converter=attrs.Converter(_convert_params, takes_self=True)
+    )
     access_control: dict | None = None
     is_paused_upon_creation: bool | None = None
     jinja_environment_kwargs: dict | None = None
@@ -369,7 +391,7 @@ class DAG:
         return TaskGroup.create_root(dag=self)
 
     @timetable.default
-    def _set_schedule(self):
+    def _default_timetable(self):
         schedule = self.schedule
         delattr(self, "schedule")
         if isinstance(schedule, Timetable):
@@ -384,26 +406,12 @@ class DAG:
             return _create_timetable(schedule, self.timezone)
 
     @params.validator
-    def _validate_params(self, attr, val: abc.MutableMapping | None):
+    def _validate_params(self, _, params: ParamsDict):
         """
         Validate Param values when the DAG has schedule defined.
 
         Raise exception if there are any Params which can not be resolved by their schema definition.
-
-        This will also merge in params from default_args
         """
-        # TODO: Task-SDK
-        from airflow.models.param import ParamsDict
-
-        val = val or {}
-
-        # merging potentially conflicting default_args['params'] into params
-        if "params" in self.default_args:
-            val.update(self.default_args["params"])
-            del self.default_args["params"]
-
-        params = ParamsDict(val)
-        object.__setattr__(self, "params", params)
         if not self.timetable or not self.timetable.can_be_scheduled:
             return
 
@@ -411,11 +419,9 @@ class DAG:
             params.validate()
         except ParamValidationError as pverr:
             raise ValueError(
-                f"DAG {self.dag_id!r} is not allowed to define a Schedule, "
+                f"DAG {self_.dag_id!r} is not allowed to define a Schedule, "
                 "as there are required params without default values, or the default values are not valid."
             ) from pverr
-
-        # check self.params and convert them into ParamsDict
 
     def __repr__(self):
         return f"<DAG: {self.dag_id}>"

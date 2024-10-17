@@ -48,6 +48,8 @@ from airflow.utils.trigger_rule import TriggerRule
 from airflow.utils.types import DagRunType
 from tests_common.test_utils.mock_operators import MockOperator
 
+from tests.models import DEFAULT_DATE
+
 
 class ClassWithCustomAttributes:
     """Class for testing purpose: allows to create objects with custom attributes in one single statement."""
@@ -103,11 +105,6 @@ class TestBaseOperator:
         BaseOperator(
             task_id="test_valid_trigger_rule", dag=non_fail_stop_dag, trigger_rule=TriggerRule.ALWAYS
         )
-        # An operator with non default trigger rule and a fail stop dag should not be allowed
-        with pytest.raises(FailStopDagInvalidTriggerRule):
-            BaseOperator(
-                task_id="test_invalid_trigger_rule", dag=fail_stop_dag, trigger_rule=TriggerRule.ALWAYS
-            )
 
     @pytest.mark.db_test
     @pytest.mark.parametrize(

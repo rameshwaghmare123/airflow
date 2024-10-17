@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 import attrs
 
+from airflow.models.param import ParamsDict
 from airflow.sdk.definitions.abstractoperator import (
     DEFAULT_IGNORE_FIRST_DEPENDS_ON_PAST,
     DEFAULT_OWNER,
@@ -49,7 +50,11 @@ from airflow.sdk.definitions.abstractoperator import (
 from airflow.sdk.definitions.decorators import fixup_decorator_warning_stack
 from airflow.sdk.definitions.node import validate_key
 from airflow.sdk.types import NOTSET, validate_instance_args
-from airflow.task.priority_strategy import PriorityWeightStrategy, validate_and_load_priority_weight_strategy
+from airflow.task.priority_strategy import (
+    PriorityWeightStrategy,
+    airflow_priority_weight_strategies,
+    validate_and_load_priority_weight_strategy,
+)
 from airflow.utils.trigger_rule import TriggerRule
 from airflow.utils.types import AttributeRemoved
 
@@ -59,14 +64,7 @@ if TYPE_CHECKING:
     from airflow.models.xcom_arg import XComArg
     from airflow.sdk.definitions.dag import DAG
     from airflow.sdk.definitions.taskgroup import TaskGroup
-    from airflow.typing_compat import TypeAlias
     from airflow.utils.operator_resources import Resources
-
-    ParamsDict: TypeAlias = collections.abc.MutableMapping[str, Any]
-else:
-    # TODO: Task-SDK
-    ParamsDict = dict
-
 
 # TODO: Task-SDK
 AirflowException = RuntimeError
@@ -514,11 +512,12 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
     ignore_first_depends_on_past: bool = DEFAULT_IGNORE_FIRST_DEPENDS_ON_PAST
     wait_for_past_depends_before_skipping: bool = DEFAULT_WAIT_FOR_PAST_DEPENDS_BEFORE_SKIPPING
     wait_for_downstream: bool = False
-    params: collections.abc.MutableMapping | None = None
+
+    # At execution_time this becomes a normal dict
+    params: ParamsDict | dict = field(default_factory=ParamsDict)
     default_args: dict | None = None
     priority_weight: int = DEFAULT_PRIORITY_WEIGHT
-    # TODO:
-    weight_rule: PriorityWeightStrategy = DEFAULT_WEIGHT_RULE
+    weight_rule: PriorityWeightStrategy = airflow_priority_weight_strategies[DEFAULT_WEIGHT_RULE]
     queue: str = DEFAULT_QUEUE
     pool: str = "default"
     pool_slots: int = DEFAULT_POOL_SLOTS
@@ -556,7 +555,7 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
     template_fields: Collection[str] = ()
     template_ext: Sequence[str] = ()
 
-    template_fields_renderers: ClassVar[dict[str, str]] = {}
+    template_fields_renderers: dict[str, str] = field(default_factory=dict, init=False)
 
     # Defines the color in the UI
     ui_color: str = "#fff"
@@ -694,7 +693,8 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
             task_group.add(self)
 
         super().__init__()
-        self.dag = dag
+        if dag is not None:
+            self.dag = dag
         self.task_group = task_group
 
         kwargs.pop("_airflow_mapped_validation_only", None)
@@ -777,10 +777,7 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
 
         self.resources = resources
 
-        """
-        # At execution_time this becomes a normal dict
-        self.params: ParamsDict | dict = ParamsDict(params)
-        """
+        self.params = ParamsDict(params)
 
         self.priority_weight = priority_weight
         self.weight_rule = validate_and_load_priority_weight_strategy(weight_rule)
@@ -815,6 +812,8 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
                     inlets,
                 ]
             )
+        else:
+            self.inlets = []
 
         if outlets:
             self.outlets = (
@@ -824,6 +823,8 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
                     outlets,
                 ]
             )
+        else:
+            self.outlets = []
 
         if isinstance(self.template_fields, str):
             warnings.warn(
@@ -938,7 +939,8 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
     @dag.setter
     def dag(self, dag: DAG | None | AttributeRemoved) -> None:
         """Operators can be assigned to one DAG, one time. Repeat assignments to that same DAG are ok."""
-        self._dag = dag
+        # TODO: Task-SDK: Remove the AttributeRemoved and this type ignore once we remove AIP-44 code
+        self._dag = dag  # type: ignore[assignment]
 
     def _convert__dag(self, dag: DAG | None | AttributeRemoved) -> DAG | None | AttributeRemoved:
         # Called automatically by __setattr__ method
@@ -962,7 +964,8 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
         if self.__from_mapped:
             pass  # Don't add to DAG -- the mapped task takes the place.
         elif dag.task_dict.get(self.task_id) is not self:
-            dag.add_task(self)
+            # TODO: Task-SDK: Remove this type ignore
+            dag.add_task(self)  # type: ignore[arg-type]
         return dag
 
     @staticmethod

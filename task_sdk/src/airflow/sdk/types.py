@@ -36,8 +36,17 @@ class ArgNotSet:
         is_arg_passed(None)  # True.
     """
 
+    @staticmethod
+    def serialize():
+        return "NOTSET"
+
+    @classmethod
+    def deserialize(cls):
+        return cls
+
 
 NOTSET = ArgNotSet()
+"""Sentinel value for argument default. See ``ArgNotSet``."""
 
 
 if TYPE_CHECKING:

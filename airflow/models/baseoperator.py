@@ -110,8 +110,12 @@ if TYPE_CHECKING:
     from airflow.models.operator import Operator
     from airflow.ti_deps.deps.base_ti_dep import BaseTIDep
     from airflow.triggers.base import BaseTrigger, StartTriggerArgs
-    from airflow.utils.task_group import TaskGroup
     from airflow.utils.types import ArgNotSet
+
+
+# Todo: AIP-44: Once we get rid of AIP-44 we can remove this. But without this here pydantic failes to resolve
+# types for serialization
+from airflow.utils.task_group import TaskGroup  # noqa: TCH001
 
 TaskPreExecuteHook = Callable[[Context], None]
 TaskPostExecuteHook = Callable[[Context, Any], None]
@@ -628,6 +632,17 @@ class BaseOperator(TaskSDKBaseOperator, AbstractOperator, metaclass=BaseOperator
 
     # Defines the operator level extra links
     operator_extra_links: Collection[BaseOperatorLink] = ()
+
+    if TYPE_CHECKING:
+
+        @property  # type: ignore[override]
+        def dag(self) -> SchedulerDAG:  # type: ignore[override]
+            return super().dag  # type: ignore[return-value]
+
+        @dag.setter
+        def dag(self, val: SchedulerDAG):
+            # For type checking only
+            ...
 
     partial: Callable[..., OperatorPartial] = _PartialDescriptor()  # type: ignore
 

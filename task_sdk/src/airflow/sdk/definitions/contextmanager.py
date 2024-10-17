@@ -40,10 +40,11 @@ class ContextStackMeta(type):
     # share_parent_context can go away once the DAG and TaskContext manager in airflow.models are removed and
     # everything uses sdk fully for definition/parsing
     def __new__(cls, name, bases, namespace, share_parent_context: bool = False, **kwargs: Any):
+        if not share_parent_context:
+            namespace["_context"] = deque()
+
         new_cls = super().__new__(cls, name, bases, namespace, **kwargs)
 
-        if not share_parent_context:
-            cls._context = deque()
         return new_cls
 
     @property

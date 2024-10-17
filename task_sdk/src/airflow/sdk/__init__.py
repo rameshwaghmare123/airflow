@@ -18,19 +18,28 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-__all__ = ["DAG", "BaseOperator", "TaskGroup"]
+__all__ = [
+    "BaseOperator",
+    "DAG",
+    "EdgeModifier",
+    "Label",
+    "TaskGroup",
+    "dag",
+]
 
 if TYPE_CHECKING:
-    from airflow.sdk.definitions.baseoperator import BaseOperator as BaseOperator
-    from airflow.sdk.definitions.dag import DAG as DAG
-    from airflow.sdk.definitions.edges import EdgeModifier as EdgeModifier
-    from airflow.sdk.definitions.taskgroup import TaskGroup as TaskGroup
+    from airflow.sdk.definitions.baseoperator import BaseOperator
+    from airflow.sdk.definitions.dag import DAG, dag
+    from airflow.sdk.definitions.edges import EdgeModifier, Label
+    from airflow.sdk.definitions.taskgroup import TaskGroup
 
 __lazy_imports: dict[str, str] = {
     "DAG": ".definitions.dag",
+    "dag": ".definitions.dag",
     "BaseOperator": ".definitions.baseoperator",
     "TaskGroup": ".definitions.taskgroup",
     "EdgeModifier": ".definitions.edges",
+    "Label": ".definitions.edges",
 }
 
 

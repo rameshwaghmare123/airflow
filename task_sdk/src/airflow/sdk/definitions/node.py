@@ -74,6 +74,7 @@ class DAGNode(DependencyMixin, metaclass=ABCMeta):
     def __init__(self):
         self.upstream_task_ids = set()
         self.downstream_task_ids = set()
+        super().__init__()
 
     @property
     @abstractmethod
@@ -128,7 +129,7 @@ class DAGNode(DependencyMixin, metaclass=ABCMeta):
         if not isinstance(task_or_task_list, Sequence):
             task_or_task_list = [task_or_task_list]
 
-        task_list: list[DAGNode] = []
+        task_list: list[BaseOperator | MappedOperator] = []
         for task_object in task_or_task_list:
             task_object.update_relative(self, not upstream, edge_modifier=edge_modifier)
             relatives = task_object.leaves if upstream else task_object.roots
@@ -160,7 +161,7 @@ class DAGNode(DependencyMixin, metaclass=ABCMeta):
         for task in task_list:
             if dag and not task.has_dag():
                 # If the other task does not yet have a dag, add it to the same dag as this task and
-                dag.add_task(task)
+                dag.add_task(task)  # type: ignore[arg-type]
             if upstream:
                 task.downstream_task_ids.add(self.node_id)
                 self.upstream_task_ids.add(task.node_id)

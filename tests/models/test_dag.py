@@ -55,7 +55,6 @@ from airflow.models.asset import (
 from airflow.models.baseoperator import BaseOperator
 from airflow.models.dag import (
     DAG,
-    DAG_ARGS_EXPECTED_TYPES,
     DagModel,
     DagOwnerAttributes,
     DagTag,
@@ -3382,13 +3381,6 @@ def test_create_dagrun_disallow_manual_to_use_automated_run_id(run_id_type: DagR
 def test_invalid_type_for_args():
     with pytest.raises(TypeError):
         DAG("invalid-default-args", schedule=None, max_consecutive_failed_dag_runs="not_an_int")
-
-
-@mock.patch("airflow.models.dag.validate_instance_args")
-def test_dag_init_validates_arg_types(mock_validate_instance_args):
-    dag = DAG("dag_with_expected_args", schedule=None)
-
-    mock_validate_instance_args.assert_called_once_with(dag, DAG_ARGS_EXPECTED_TYPES)
 
 
 class TestTaskClearingSetupTeardownBehavior:

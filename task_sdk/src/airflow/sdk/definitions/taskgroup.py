@@ -63,7 +63,7 @@ TASKGROUP_ARGS_EXPECTED_TYPES = {
 }
 
 
-@attrs.define()
+@attrs.define(repr=False)
 class TaskGroup(DAGNode):
     """
     A collection of tasks.
@@ -94,10 +94,10 @@ class TaskGroup(DAGNode):
         automatically add `__1` etc suffixes
     """
 
-    group_id: str
+    _group_id: str | None
     prefix_group_id: bool = True
     parent_group: TaskGroup | None = None
-    dag: DAG = attrs.field(default=None)
+    dag: DAG = attrs.field()
     default_args: dict[str, Any] = attrs.field(factory=dict, converter=copy.deepcopy)
     tooltip: str = ""
     children: dict[str, DAGNode] = attrs.field(factory=dict, init=False)
@@ -107,7 +107,10 @@ class TaskGroup(DAGNode):
     upstream_task_ids: set[str] = attrs.field(factory=set, init=False)
     downstream_task_ids: set[str] = attrs.field(factory=set, init=False)
 
-    used_group_ids: set[str] = attrs.field(factory=set, init=False, on_setattr=attrs.setters.NO_OP)
+    used_group_ids: set[str] = attrs.field(factory=set, init=False, on_setattr=attrs.setters.frozen)
+
+    ui_color: str = "CornflowerBlue"
+    ui_fgcolor: str = "#000"
 
     @dag.default
     def _default_dag(self):
@@ -118,15 +121,17 @@ class TaskGroup(DAGNode):
         dag = DagContext.get_current()
         if not dag:
             raise RuntimeError("TaskGroup can only be used inside a dag")
+        self.parent_group = dag.task_group
         return dag
 
-    def __atrs_post_init__(self):
+    def __attrs_post_init__(self):
         if self.parent_group:
+            object.__setattr__(self, "used_group_ids", self.parent_group.used_group_ids)
             self.parent_group.add(self)
             if self.parent_group.default_args:
                 self.default_args = {**self.parent_group.default_args, **self.default_args}
 
-        if self.group_id:
+        if self._group_id:
             self.used_group_ids.add(self.group_id)
             self.used_group_ids.add(self.downstream_join_id)
             self.used_group_ids.add(self.upstream_join_id)
@@ -157,20 +162,20 @@ class TaskGroup(DAGNode):
 
     @property
     def node_id(self):
-        return self.group_id
+        return self._group_id
 
     @property
     def is_root(self) -> bool:
         """Returns True if this TaskGroup is the root TaskGroup. Otherwise False."""
-        return not self.group_id
+        return not self._group_id
 
     @property
     def task_group(self) -> TaskGroup | None:
         return self.parent_group
 
     @task_group.setter
-    def _set_task_group(self, tg: TaskGroup):
-        self.parent_group = tg
+    def task_group(self, value: TaskGroup | None):
+        self.parent_group = value
 
     def __iter__(self):
         for child in self.children.values():
@@ -181,7 +186,7 @@ class TaskGroup(DAGNode):
 
     def add(self, task: DAGNode) -> DAGNode:
         """
-        Add a task to this TaskGroup.
+        Add a task or TaskGroup to this TaskGroup.
 
         :meta private:
         """
@@ -189,9 +194,9 @@ class TaskGroup(DAGNode):
         from airflow.sdk.definitions.contextmanager import TaskGroupContext
 
         if TaskGroupContext.active:
-            if task.parent_group and task.parent_group != self:
-                task.parent_group.children.pop(task.node_id, None)
-                task.parent_group = self
+            if task.task_group and task.task_group != self:
+                task.task_group.children.pop(task.node_id, None)
+                task.task_group = self
         existing_tg = task.task_group
         if isinstance(task, AbstractOperator) and existing_tg is not None and existing_tg != self:
             raise TaskAlreadyInTaskGroup(task.node_id, existing_tg.node_id, self.node_id)

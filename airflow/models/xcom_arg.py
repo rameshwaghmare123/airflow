@@ -35,7 +35,7 @@ from airflow.utils.session import NEW_SESSION, provide_session
 from airflow.utils.setup_teardown import SetupTeardownContext
 from airflow.utils.state import State
 from airflow.utils.trigger_rule import TriggerRule
-from airflow.utils.types import NOTSET, ArgNotSet
+from airflow.sdk.types import NOTSET, ArgNotSet
 from airflow.utils.xcom import XCOM_RETURN_KEY
 
 if TYPE_CHECKING:
@@ -122,7 +122,7 @@ class XComArg(ResolveMixin, DependencyMixin):
                 yield from XComArg.iter_xcom_references(getattr(arg, attr))
 
     @staticmethod
-    def apply_upstream_relationship(op: Operator, arg: Any):
+    def apply_upstream_relationship(op: DependencyMixin, arg: Any):
         """
         Set dependency for XComArgs.
 

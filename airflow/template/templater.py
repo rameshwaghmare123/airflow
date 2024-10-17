@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Sequence
 
@@ -27,6 +26,8 @@ from airflow.utils.log.logging_mixin import LoggingMixin
 from airflow.utils.mixins import ResolveMixin
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import jinja2
 
     from airflow.models.operator import Operator
@@ -122,7 +123,7 @@ class Templater(LoggingMixin):
             if rendered_content:
                 setattr(parent, attr_name, rendered_content)
 
-    def _render(self, template, context, dag: DAG | None = None) -> Any:
+    def _render(self, template, context, dag=None) -> Any:
         if dag and dag.render_template_as_native_obj:
             return render_template_as_native(template, context)
         return render_template_to_string(template, context)
@@ -130,7 +131,7 @@ class Templater(LoggingMixin):
     def render_template(
         self,
         content: Any,
-        context: Context,
+        context: Mapping[str, Any],
         jinja_env: jinja2.Environment | None = None,
         seen_oids: set[int] | None = None,
     ) -> Any:

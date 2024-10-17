@@ -43,7 +43,6 @@ if TYPE_CHECKING:
     from airflow.models.baseoperatorlink import BaseOperatorLink
     from airflow.sdk.definitions.baseoperator import BaseOperator
     from airflow.sdk.definitions.dag import DAG
-    from airflow.task.priority_strategy import PriorityWeightStrategy
 
     # TODO: Task-SDK
     Context = dict[str, Any]
@@ -86,7 +85,6 @@ class AbstractOperator(DAGNode):
 
     operator_class: type[BaseOperator] | dict[str, Any]
 
-    weight_rule: PriorityWeightStrategy
     priority_weight: int
 
     # Defines the operator level extra links.

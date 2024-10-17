@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 TaskGroup: TypeAlias = airflow.sdk.definitions.taskgroup.TaskGroup
 
 
-class MappedTaskGroup(TaskGroup):
+class MappedTaskGroup(airflow.sdk.definitions.taskgroup.MappedTaskGroup):
     """
     A mapped task group.
 
@@ -50,37 +50,12 @@ class MappedTaskGroup(TaskGroup):
     a ``@task_group`` function instead.
     """
 
-    def __init__(self, *, expand_input: ExpandInput, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._expand_input = expand_input
-
     def iter_mapped_dependencies(self) -> Iterator[Operator]:
         """Upstream dependencies that provide XComs used by this mapped task group."""
         from airflow.models.xcom_arg import XComArg
 
         for op, _ in XComArg.iter_xcom_references(self._expand_input):
             yield op
-
-    @methodtools.lru_cache(maxsize=None)
-    def get_parse_time_mapped_ti_count(self) -> int:
-        """
-        Return the Number of instances a task in this group should be mapped to, when a DAG run is created.
-
-        This only considers literal mapped arguments, and would return *None*
-        when any non-literal values are used for mapping.
-
-        If this group is inside mapped task groups, all the nested counts are
-        multiplied and accounted.
-
-        :meta private:
-
-        :raise NotFullyPopulated: If any non-literal mapped arguments are encountered.
-        :return: The total number of mapped instances each task should have.
-        """
-        return functools.reduce(
-            operator.mul,
-            (g._expand_input.get_parse_time_mapped_ti_count() for g in self.iter_mapped_task_groups()),
-        )
 
     def get_mapped_ti_count(self, run_id: str, *, session: Session) -> int:
         """
@@ -104,11 +79,6 @@ class MappedTaskGroup(TaskGroup):
             operator.mul,
             (g._expand_input.get_total_map_length(run_id, session=session) for g in groups),
         )
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        for op, _ in self._expand_input.iter_references():
-            self.set_upstream(op)
-        super().__exit__(exc_type, exc_val, exc_tb)
 
 
 class TaskGroupContext(airflow.sdk.definitions.contextmanager.TaskGroupContext, share_parent_context=True):

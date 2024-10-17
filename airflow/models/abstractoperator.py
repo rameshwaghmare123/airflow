@@ -33,26 +33,30 @@ from airflow.sdk.definitions.abstractoperator import AbstractOperator as TaskSDK
 from airflow.template.templater import Templater
 from airflow.utils.context import Context
 from airflow.utils.db import exists_query
+from airflow.utils.log.secrets_masker import redact
 from airflow.utils.setup_teardown import SetupTeardownContext
 from airflow.utils.sqlalchemy import with_row_locks
 from airflow.utils.state import State, TaskInstanceState
 from airflow.utils.task_group import MappedTaskGroup
 from airflow.utils.trigger_rule import TriggerRule
-from airflow.utils.types import NOTSET, ArgNotSet
+from airflow.sdk.types import NOTSET, ArgNotSet
 from airflow.utils.weight_rule import WeightRule
 
 TaskStateChangeCallback = Callable[[Context], None]
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import jinja2  # Slow import.
     from sqlalchemy.orm import Session
 
-    from airflow.models.baseoperator import BaseOperator
     from airflow.models.baseoperatorlink import BaseOperatorLink
-    from airflow.models.dag import DAG, DAG as SchedulerDAG
+    from airflow.models.dag import DAG as SchedulerDAG
     from airflow.models.mappedoperator import MappedOperator
     from airflow.models.operator import Operator
     from airflow.models.taskinstance import TaskInstance
+    from airflow.sdk import BaseOperator, DAG
+    from airflow.task.priority_strategy import PriorityWeightStrategy
     from airflow.triggers.base import StartTriggerArgs
     from airflow.utils.task_group import TaskGroup
 
@@ -99,6 +103,7 @@ class AbstractOperator(Templater, TaskSDKAbstractOperator):
     """
 
     trigger_rule: TriggerRule
+    weight_rule: PriorityWeightStrategy
 
     @property
     def is_setup(self) -> bool:
@@ -440,6 +445,7 @@ class AbstractOperator(Templater, TaskSDKAbstractOperator):
         - WeightRule.DOWNSTREAM - adds priority weight of all downstream tasks
         - WeightRule.UPSTREAM - adds priority weight of all upstream tasks
         """
+        # TODO: This should live in the WeightStragies themselves, not in here
         from airflow.task.priority_strategy import (
             _AbsolutePriorityWeightStrategy,
             _DownstreamPriorityWeightStrategy,
@@ -567,9 +573,9 @@ class AbstractOperator(Templater, TaskSDKAbstractOperator):
         """
         from sqlalchemy import func, or_
 
-        from airflow.models.baseoperator import BaseOperator
         from airflow.models.mappedoperator import MappedOperator
         from airflow.models.taskinstance import TaskInstance
+        from airflow.sdk import BaseOperator
         from airflow.settings import task_instance_mutation_hook
 
         if not isinstance(self, (BaseOperator, MappedOperator)):

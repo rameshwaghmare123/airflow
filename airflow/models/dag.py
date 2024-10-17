@@ -36,6 +36,7 @@ from typing import (
     Collection,
     Container,
     Iterable,
+    Optional,
     Pattern,
     Sequence,
     Union,
@@ -103,15 +104,14 @@ from airflow.sdk import DAG as TaskSDKDag, dag as dag
 from airflow.secrets.local_filesystem import LocalFilesystemBackend
 from airflow.security import permissions
 from airflow.settings import json
+from airflow.stats import Stats
 from airflow.timetables.base import DagRunInfo, DataInterval, TimeRestriction, Timetable
 from airflow.timetables.interval import CronDataIntervalTimetable, DeltaDataIntervalTimetable
 from airflow.timetables.simple import (
     AssetTriggeredTimetable,
-    ContinuousTimetable,
     NullTimetable,
     OnceTimetable,
 )
-from airflow.timetables.trigger import CronTriggerTimetable
 from airflow.utils import timezone
 from airflow.utils.dag_cycle_tester import check_cycle
 from airflow.utils.helpers import exactly_one
@@ -122,7 +122,6 @@ from airflow.utils.state import DagRunState, State, TaskInstanceState
 from airflow.utils.types import DagRunTriggeredByType, DagRunType
 
 if TYPE_CHECKING:
-    from pendulum.tz.timezone import FixedTimezone, Timezone
     from sqlalchemy.orm.query import Query
     from sqlalchemy.orm.session import Session
 
@@ -187,24 +186,6 @@ def _get_model_data_interval(
     elif end is None:
         raise InconsistentDataInterval(instance, start_field_name, end_field_name)
     return DataInterval(start, end)
-
-
-def create_timetable(interval: ScheduleInterval, timezone: Timezone | FixedTimezone) -> Timetable:
-    """Create a Timetable instance from a plain ``schedule`` value."""
-    if interval is None:
-        return NullTimetable()
-    if interval == "@once":
-        return OnceTimetable()
-    if interval == "@continuous":
-        return ContinuousTimetable()
-    if isinstance(interval, (timedelta, relativedelta)):
-        return DeltaDataIntervalTimetable(interval)
-    if isinstance(interval, str):
-        if airflow_conf.getboolean("scheduler", "create_cron_data_intervals"):
-            return CronDataIntervalTimetable(interval, timezone)
-        else:
-            return CronTriggerTimetable(interval, timezone=timezone)
-    raise ValueError(f"{interval!r} is not a valid schedule.")
 
 
 def get_last_dagrun(dag_id, session, include_externally_triggered=False):
@@ -316,7 +297,7 @@ def _create_orm_dagrun(
 
 
 @functools.total_ordering
-@attrs.define(hash=False, repr=False)
+@attrs.define(hash=False, repr=False, eq=False)
 class DAG(TaskSDKDag, LoggingMixin):
     """
     A dag (directed acyclic graph) is a collection of tasks with directional dependencies.
@@ -436,7 +417,23 @@ class DAG(TaskSDKDag, LoggingMixin):
     on_success_callback: None | DagStateChangeCallback | list[DagStateChangeCallback] = None
     on_failure_callback: None | DagStateChangeCallback | list[DagStateChangeCallback] = None
 
-    __hash__ = TaskSDKDag.__hash__
+    has_on_success_callback: bool = attrs.field(init=False)
+    has_on_failure_callback: bool = attrs.field(init=False)
+
+    default_view: str = airflow_conf.get_mandatory_value("webserver", "dag_default_view").lower()
+    orientation: str = airflow_conf.get_mandatory_value("webserver", "dag_orientation")
+
+    # this will only be set at serialization time
+    # it's only use is for determining the relative fileloc based only on the serialize dag
+    _processor_dags_folder: str | None = attrs.field(init=False, default=None)
+
+    @has_on_success_callback.default
+    def _has_on_success_callback(self) -> bool:
+        return self.on_success_callback is not None
+
+    @has_on_failure_callback.default
+    def _has_on_failure_callback(self) -> bool:
+        return self.on_failure_callback is not None
 
     def validate_executor_field(self):
         for task in self.tasks:
@@ -625,8 +622,8 @@ class DAG(TaskSDKDag, LoggingMixin):
 
     def iter_dagrun_infos_between(
         self,
-        earliest: pendulum.DateTime | None,
-        latest: pendulum.DateTime,
+        earliest: pendulum.DateTime | datetime | None,
+        latest: pendulum.DateTime | datetime,
         *,
         align: bool = True,
     ) -> Iterable[DagRunInfo]:
@@ -738,10 +735,6 @@ class DAG(TaskSDKDag, LoggingMixin):
     @access_control.setter
     def access_control(self, value):
         self._access_control = DAG._upgrade_outdated_dag_access_control(value)
-
-    @property
-    def default_view(self) -> str:
-        return "grid"
 
     @property
     def pickle_id(self) -> int | None:
@@ -1840,6 +1833,9 @@ class DAG(TaskSDKDag, LoggingMixin):
 
         # todo: AIP-78 add verification that if run type is backfill then we have a backfill id
 
+        if TYPE_CHECKING:
+            # TODO: Task-SDK: remove this assert
+            assert self.params
         # create a copy of params before validating
         copied_params = copy.deepcopy(self.params)
         copied_params.update(conf or {})
@@ -2457,11 +2453,11 @@ class DagContext(airflow.sdk.definitions.contextmanager.DagContext, share_parent
 
     @classmethod
     def pop_context_managed_dag(cls) -> DAG | None:
-        return cls.pop()
+        return cast(DAG, cls.pop())
 
     @classmethod
     def get_current_dag(cls) -> DAG | None:
-        return cls.get_current()
+        return cast(Optional[DAG], cls.get_current())
 
 
 def _run_inline_trigger(trigger):
