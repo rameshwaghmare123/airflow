@@ -268,12 +268,12 @@ packages:
   SemVer MAJOR and MINOR versions for the packages are independent of the Airflow version.
   For example, `google 4.1.0` and `amazon 3.0.3` providers can happily be installed
   with `Airflow 2.1.2`. If there are limits of cross-dependencies between providers and Airflow packages,
-  they are present in providers as `install_requires` limitations. We aim to keep backwards
+  they are present in providers as `install_requires` limitations. We aim to keep backward
   compatibility of providers with all previously released Airflow 2 versions but
   there will sometimes be breaking changes that might make some, or all
   providers, have minimum Airflow version specified.
 * **Airflow Helm Chart**: SemVer rules apply to changes in the chart only. SemVer MAJOR and MINOR
-  versions for the chart are independent of the Airflow version. We aim to keep backwards
+  versions for the chart are independent of the Airflow version. We aim to keep backward
   compatibility of the Helm Chart with all released Airflow 2 versions, but some new features might
   only work starting from specific Airflow releases. We might however limit the Helm
   Chart to depend on minimal Airflow version.
